@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yahoomail-mcp"
+version = "0.1.0"
+description = "Private MCP server for a Yahoo Mail account"
+requires-python = ">=3.11"
+dependencies = ["mcp==1.30.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[project.scripts]
+yahoo-mail-mcp = "yahoomail_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["yahoomail_mcp"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
