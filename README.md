@@ -2,6 +2,8 @@
 
 Private MCP server for a Yahoo Mail account. It runs on a Mac with Docker Compose or Apple Container, using the same Dockerfile in both cases. The server connects to Yahoo over IMAP/TLS and exposes its tools at **`http://127.0.0.1:8000/mcp`**. No model API key or local database is required.
 
+![alt text](image.png)
+
 ## Available tools
 
 | Tool | Action |
