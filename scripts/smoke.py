@@ -23,13 +23,16 @@ async def main(url, search, read_only):
             required = {
                 "search_mail", "read_message", "read_thread",
                 "account_setup_instructions", "analyze_senders",
-                "suggest_cleanup", "unsubscribe_options", "preview_cleanup",
+                "suggest_cleanup", "unsubscribe_options",
             }
             if not read_only:
-                required.update({"save_draft", "trash_messages"})
+                required.update({"save_draft", "trash_messages", "preview_cleanup"})
             missing = required - names
             if missing:
                 raise SystemExit(f"Missing required tools: {sorted(missing)}")
+            writes = names & {"save_draft", "trash_messages", "preview_cleanup"}
+            if read_only and writes:
+                raise SystemExit(f"Unexpected write tools: {sorted(writes)}")
             extra = names - required
             message = "MCP ready: " + ", ".join(sorted(names))
             if extra:
@@ -49,7 +52,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--read-only",
         action="store_true",
-        help="Require only read-only tools; write tools may still be advertised.",
+        help="Require the read-only profile with no write tools.",
     )
     args = parser.parse_args()
     asyncio.run(main(args.url, args.search, args.read_only))
