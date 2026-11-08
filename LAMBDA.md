@@ -1,76 +1,165 @@
-# Authenticated Yahoo Mail MCP
+# Déploiement AWS Lambda
 
-Start with the local test on your Mac. The AWS deployment is a separate, single-account profile for search, message reading and thread reading. Yahoo access still uses IMAP over TLS.
+Ce document couvre uniquement le déploiement distant. Pour installer le serveur, configurer Yahoo, lancer Apple Container/Docker et tester localement, suivre le [README.md](./README.md).
 
-## 1. Test on your Mac
+## Architecture
 
-From the project directory, generate a token.
+```text
+Client MCP --Bearer token--> API Gateway HTTP API
+                                  |
+                                  v
+                         Lambda + Web Adapter
+                           |              |
+                           v              v
+                    Yahoo IMAP/TLS     DynamoDB
+                                      previews TTL
+```
+
+La Lambda utilise un token bearer séparé du token local. Les identifiants Yahoo et ce token sont lus depuis Secrets Manager. Les écritures sont limitées au déplacement vers Trash après approbation explicite ; les brouillons et l’envoi ne sont pas exposés par le profil distant.
+
+L’URL d’approbation `/approve/...` affiche la preview et demande un clic utilisateur. Les approvals ne nécessitent pas de consulter CloudWatch Logs. Chaque preview est à usage unique et expire après cinq minutes. Le lien d’approbation est lui-même secret : ne pas le publier dans un ticket, un log ou une conversation partagée.
+
+## Prérequis
+
+- AWS CLI configuré avec le compte cible.
+- AWS SAM CLI.
+- Docker Desktop en fonctionnement.
+- Mac Apple Silicon pour l’image ARM64.
+- Un compte Yahoo avec un app password déjà créé selon le [README.md](./README.md).
+
+Vérifier le compte et la région :
+
+```sh
+aws sts get-caller-identity
+aws configure get region
+```
+
+Les exemples utilisent `eu-west-2` (Londres). Remplacer cette région partout si nécessaire.
+
+## 1. Créer le secret Yahoo
+
+Créer un token distant distinct du token local :
 
 ```sh
 openssl rand -hex 32
 ```
 
-Copy it into `.env` as `YAHOO_MCP_TOKEN=your_generated_token`, alongside the Yahoo credentials. Set `YAHOO_ENABLE_WRITES=0` for this test. Restart the server using one mode from the main README. For example, use `./run.sh macos-linux` for Apple Container.
+Créer un secret JSON dans Secrets Manager, par exemple avec un fichier temporaire protégé :
 
-In a second terminal, send a request without the token. It should print **401**.
+```json
+{
+  "YAHOO_EMAIL": "your-address@yahoo.com",
+  "YAHOO_APP_PASSWORD": "your_yahoo_app_password",
+  "YAHOO_MCP_TOKEN": "your_remote_token"
+}
+```
+
+Ne pas envoyer l’app password ou le token dans un prompt d’IA. Le secret doit rester dans Secrets Manager et n’est jamais copié dans le template CloudFormation.
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' \
-  -X POST http://127.0.0.1:8000/mcp
+aws secretsmanager create-secret \
+  --name yahoo-mail-mcp/account \
+  --region eu-west-2 \
+  --secret-string file://yahoo-secret.json
 ```
 
-Then enter the same token in the terminal when prompted. This zsh command reads it without echoing it or putting its value in shell history.
+Noter l’ARN retourné (`ARN`). Supprimer ensuite le fichier local contenant le secret de manière sûre.
 
-```zsh
-read -rs 'YAHOO_MCP_TOKEN?MCP bearer token: '
-printf '\n'
-export YAHOO_MCP_TOKEN
-.venv/bin/python scripts/smoke.py --search
-```
+## 2. Valider et déployer
 
-If needed, create the virtual environment and run `.venv/bin/python -m pip install -e .` as shown in the main README. The test should print `MCP ready` and `Yahoo search OK`. Local mode still lists all five tools. The write operations are disabled by the environment setting above.
-
-To try from Codex, add a separate entry in `~/.codex/config.toml` and launch Codex from the terminal where you exported the token.
-
-```toml
-[mcp_servers.yahoo-mail-auth]
-url = "http://127.0.0.1:8000/mcp"
-bearer_token_env_var = "YAHOO_MCP_TOKEN"
-```
-
-Ask it to use `yahoo-mail-auth` to find the latest message in `INBOX`. If another local client starts getting 401 after you turn authentication on, configure that client to send the same bearer token.
-
-## 2. Deploy when the local test passes
-
-Use Docker Desktop, the AWS CLI and the AWS SAM CLI. The template targets ARM64, so build it on an Apple Silicon Mac with Docker running. Check that `aws sts get-caller-identity` shows the account you intend to deploy into.
-
-In **Secrets Manager**, create a secret in **Europe (London), `eu-west-2`** or your chosen region. Use the default Secrets Manager encryption key. Store these three keys in one JSON secret and copy its ARN. Use a fresh token for AWS, separate from the local one.
-
-| Key | Value |
-|---|---|
-| `YAHOO_EMAIL` | Your Yahoo address |
-| `YAHOO_APP_PASSWORD` | Your Yahoo app password |
-| `YAHOO_MCP_TOKEN` | A token generated with `openssl rand -hex 32` |
-
-The Lambda role can read this secret. SAM receives the ARN only.
+Depuis la racine du projet :
 
 ```sh
 sam validate --lint --region eu-west-2
-sam build
-sam deploy --stack-name yahoo-mail-mcp --region eu-west-2 \
-  --resolve-image-repos --capabilities CAPABILITY_IAM \
+sam build --use-container
+sam deploy --stack-name yahoo-mail-mcp \
+  --region eu-west-2 \
+  --resolve-image-repos \
+  --capabilities CAPABILITY_IAM \
   --confirm-changeset \
   --parameter-overrides YahooMcpSecretArn=YOUR_SECRET_ARN
 ```
 
-Review the change set. Copy the **McpUrl** output. Set it as `MCP_URL` in the terminal, repeat the local unauthenticated curl test with that URL, then export the **AWS** bearer token and run:
+Le stack crée :
+
+- une API Gateway HTTP avec `/mcp` et `/approve/{approval_id}` ;
+- une Lambda ARM64 basée sur [Dockerfile.lambda](./Dockerfile.lambda) ;
+- une table DynamoDB à la demande avec expiration des previews ;
+- un rôle autorisé à lire le secret et la table d’approbation ;
+- un groupe de logs conservé sept jours.
+
+Accepter le change set uniquement après avoir vérifié le compte, la région et l’ARN du secret.
+
+## 3. Vérifier l’endpoint
+
+Récupérer l’URL :
 
 ```sh
+MCP_URL=$(aws cloudformation describe-stacks \
+  --stack-name yahoo-mail-mcp \
+  --region eu-west-2 \
+  --query 'Stacks[0].Outputs[?OutputKey==`McpUrl`].OutputValue' \
+  --output text)
+printf '%s\n' "$MCP_URL"
+```
+
+Sans token, la réponse doit être `401` :
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$MCP_URL"
+```
+
+Dans un terminal qui ne sera pas partagé, charger le token sans l’afficher :
+
+```zsh
+read -rs 'YAHOO_MCP_TOKEN?Remote MCP bearer token: '
+printf '\n'
+export YAHOO_MCP_TOKEN MCP_URL
 .venv/bin/python scripts/smoke.py --url "$MCP_URL" --read-only --search
 ```
 
-For Codex, create another config entry using the HTTPS URL and the same `bearer_token_env_var` setting. Use only a client that can send a preconfigured bearer token. This endpoint has no interactive OAuth flow or Yahoo account switching.
+Le test doit découvrir les outils de lecture et d’analyse, puis afficher `Yahoo search OK`.
 
-The API Gateway URL is internet-reachable. Every MCP request must supply the bearer token, which grants read access to this mailbox. The endpoint exposes three read tools and Lambda runs with writes disabled. Keep the token private and use only HTTPS for remote connections. Lambda reads the secret on cold start, so existing execution environments can temporarily keep old values after rotation. For immediate revocation, disable the endpoint and recycle the function through a deployment before restoring access. To remove the SAM stack, run `sam delete --stack-name yahoo-mail-mcp --region eu-west-2`. The separately created secret must be managed separately.
+## 4. Utiliser le nettoyage distant
 
-The gateway uses buffered responses and a 29-second integration timeout. Very large or slow IMAP searches may hit that deadline. Check Lambda logs for startup or IMAP errors. The server does not log the bearer token or message content during normal operation.
+Dans le client MCP authentifié :
+
+1. Appeler `analyze_senders` pour repérer les listes très fréquentes ou volumineuses.
+2. Appeler `unsubscribe_options` pour afficher uniquement les options standard `List-Unsubscribe`.
+3. Appeler `suggest_cleanup` pour obtenir des candidats ; cette étape ne modifie rien.
+4. Sélectionner explicitement les UID à déplacer et appeler `preview_cleanup`.
+5. Ouvrir l’`approval_url` retournée dans un navigateur, vérifier les sujets et expéditeurs, puis cliquer sur **Approve move to Trash**.
+
+Le déplacement est alors effectué par Lambda via IMAP `MOVE`. Il n’y a pas de suppression permanente. Si Yahoo n’annonce pas `MOVE`, l’interface indiquera d’effectuer l’opération dans Yahoo Mail.
+
+Ne pas demander à l’IA de suivre automatiquement l’URL d’approbation. Le clic doit être une action humaine après vérification de la preview.
+
+## 5. Configuration d’un client MCP
+
+Le endpoint distant utilise un bearer token préconfiguré. Exemple conceptuel :
+
+```toml
+[mcp_servers.yahoo-mail-aws]
+url = "https://YOUR_API_ID.execute-api.eu-west-2.amazonaws.com/mcp"
+bearer_token_env_var = "YAHOO_MCP_TOKEN"
+```
+
+Ce mécanisme est une authentification par secret partagé, pas un flux OAuth complet. Pour une authentification OAuth d’entreprise, placer Cognito ou un autre fournisseur OAuth 2.0 devant API Gateway et remplacer la validation bearer applicative par une validation JWT/API Gateway Authorizer.
+
+## Dépannage et suppression
+
+Consulter les logs uniquement pour les erreurs de démarrage, d’IMAP ou d’AWS :
+
+```sh
+sam logs --stack-name yahoo-mail-mcp --region eu-west-2 --tail
+```
+
+Vérifier aussi que le secret existe dans la même région, que son ARN est correct et que Yahoo accepte l’app password.
+
+Pour supprimer le stack :
+
+```sh
+sam delete --stack-name yahoo-mail-mcp --region eu-west-2
+```
+
+Le secret créé séparément doit être supprimé ou conservé séparément : le stack ne le supprime pas.

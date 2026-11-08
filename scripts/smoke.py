@@ -20,12 +20,21 @@ async def main(url, search, read_only):
         async with ClientSession(read, write) as session:
             await session.initialize()
             names = {tool.name for tool in (await session.list_tools()).tools}
-            expected = {"search_mail", "read_message", "read_thread"}
+            required = {
+                "search_mail", "read_message", "read_thread",
+                "account_setup_instructions", "analyze_senders",
+                "suggest_cleanup", "unsubscribe_options", "preview_cleanup",
+            }
             if not read_only:
-                expected.update({"save_draft", "trash_messages"})
-            if names != expected:
-                raise SystemExit(f"Unexpected tools: {sorted(names)}")
-            print("MCP ready:", ", ".join(sorted(names)))
+                required.update({"save_draft", "trash_messages"})
+            missing = required - names
+            if missing:
+                raise SystemExit(f"Missing required tools: {sorted(missing)}")
+            extra = names - required
+            message = "MCP ready: " + ", ".join(sorted(names))
+            if extra:
+                message += " (additional tools: " + ", ".join(sorted(extra)) + ")"
+            print(message)
             if search:
                 result = await session.call_tool("search_mail", {"limit": 1})
                 if result.isError:
@@ -37,6 +46,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8000/mcp")
     parser.add_argument("--search", action="store_true")
-    parser.add_argument("--read-only", action="store_true", help="Expect only the three read tools.")
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Require only read-only tools; write tools may still be advertised.",
+    )
     args = parser.parse_args()
     asyncio.run(main(args.url, args.search, args.read_only))

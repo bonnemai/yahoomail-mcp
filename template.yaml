@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Single-account Yahoo Mail MCP with bearer authentication and read-only tools
+Description: Single-account Yahoo Mail MCP with bearer authentication and reviewed cleanup
 
 Parameters:
   YahooMcpSecretArn:
@@ -38,12 +38,34 @@ Resources:
       Environment:
         Variables:
           MCP_REMOTE_HOST: !Sub '${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+          MCP_APPROVAL_BASE_URL: !Sub 'https://${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/approve'
           YAHOO_MCP_SECRET_ARN: !Ref YahooMcpSecretArn
+          YAHOO_MCP_APPROVAL_TABLE: !Ref ApprovalTable
       Policies:
         - Statement:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: !Ref YahooMcpSecretArn
+            - Effect: Allow
+              Action:
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt ApprovalTable.Arn
+
+  ApprovalTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: approval_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: approval_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
   McpIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -68,13 +90,20 @@ Resources:
       FunctionName: !Ref McpFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApi}/$default/*/mcp'
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApi}/$default/*'
 
   McpLogs:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/lambda/${McpFunction}'
       RetentionInDays: 7
+
+  ApprovalRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref McpApi
+      RouteKey: 'ANY /approve/{approval_id}'
+      Target: !Sub 'integrations/${McpIntegration}'
 
 Outputs:
   McpUrl:

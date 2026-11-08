@@ -4,7 +4,7 @@ Private MCP server for a Yahoo Mail account. It runs on a Mac with Docker Compos
 
 ![alt text](image.png)
 
-For remote access, [test bearer authentication locally first, then deploy the read-only AWS Lambda profile](./LAMBDA.md).
+For remote access, [test bearer authentication locally first, then deploy the AWS Lambda profile](./LAMBDA.md).
 
 ## Available tools
 
@@ -111,7 +111,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/smoke.py --search
 ```
 
-The first smoke test opens an MCP session and verifies all five tools. It works without Yahoo access. The second performs a real read-only search in `INBOX`; it does not print message contents or modify mail.
+The first smoke test opens an MCP session and verifies the available tools. It works without Yahoo access. The second performs a real read-only search in `INBOX`; it does not print message contents or modify mail.
 
 ## 4. Connect an MCP client
 
@@ -136,7 +136,7 @@ The Mac port is bound to `127.0.0.1`. Without an optional bearer token, the serv
 
 For local clients, set `YAHOO_MCP_TOKEN` to a random value of at least 32 ASCII letters or digits. Generate one with `openssl rand -hex 32`. Clients must send it as `Authorization: Bearer ...`. A bearer token is a shared secret, not a complete OAuth authorization flow; do not expose this local endpoint or token to the public Internet.
 
-The Lambda profile in [LAMBDA.md](./LAMBDA.md) is also bearer-token based and read-only. A production OAuth deployment should put Cognito or another OAuth 2.0 authorization server in front of API Gateway and validate JWTs before invoking Lambda. The Yahoo app password remains a separate server-side secret.
+The Lambda profile in [LAMBDA.md](./LAMBDA.md) is bearer-token based. It permits only reviewed moves to Trash; drafts and sending are not exposed. A production OAuth deployment should put Cognito or another OAuth 2.0 authorization server in front of API Gateway and validate JWTs before invoking Lambda. The Yahoo app password remains a separate server-side secret.
 
 ## 5. Test drafts and trash
 
@@ -163,7 +163,7 @@ An approval code expires after five minutes and can be used only once. If the co
 
 Call `analyze_senders` first. It groups the scanned messages by `List-ID` when available, otherwise by sender, and reports message count, unread count, total size and standard unsubscribe headers. Use `unsubscribe_options` to inspect a particular list. Only links from the `List-Unsubscribe` header are shown; links inside message bodies are never followed automatically.
 
-Call `suggest_cleanup` to obtain large unread-message candidates. Review the returned UIDs and reasons, then call `preview_cleanup` with the exact selected UIDs. The final `trash_messages` approval still requires the user to inspect the preview and provide the one-time code. The server moves messages to Trash; it does not permanently delete them.
+Call `suggest_cleanup` to obtain large unread-message candidates. Review the returned UIDs and reasons, then call `preview_cleanup` with the exact selected UIDs. Locally, the final `trash_messages` approval uses the one-time code in the local server log. On Lambda, open the returned `approval_url` and click the approval button only after inspecting the preview. The server moves messages to Trash; it does not permanently delete them.
 
 ## Large mailboxes and troubleshooting
 

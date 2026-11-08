@@ -7,7 +7,9 @@ import time
 from collections import defaultdict
 from email.utils import parseaddr
 from functools import wraps
+from html import escape
 from typing import Annotated, Literal
+from urllib.parse import parse_qs
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -15,7 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 import uvicorn
 
 from . import yahoo
@@ -44,6 +46,8 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 pending = {}
 pending_lock = threading.Lock()
 APPROVAL_TTL = 300
+remote_approval_store = None
+approval_base_url = ""
 
 
 def mail_tool(fn):
@@ -306,6 +310,8 @@ def trash_messages(
     """Preview explicit message IDs by providing folder, uid_validity and uids. Show the preview to the user. To execute, provide only preview_id and the code the user reads from their local logs."""
     require_writes()
     if preview_id is not None:
+        if remote_approval_store is not None:
+            raise yahoo.MailError("Remote approvals use the approval URL returned in the preview.")
         if not approval_code or any(value is not None for value in (folder, uid_validity, uids)):
             raise yahoo.MailError("Provide only preview_id and the local approval code to execute.")
         with pending_lock:
@@ -329,6 +335,29 @@ def trash_messages(
     preview_id = secrets.token_urlsafe(16)
     code = str(secrets.randbelow(90_000_000) + 10_000_000)
     now = time.monotonic()
+    preview_messages = [yahoo.summary(uid, messages[uid]) for uid in selected]
+    if remote_approval_store is not None:
+        approval_token = secrets.token_urlsafe(32)
+        remote_approval_store.create(
+            preview_id,
+            approval_token,
+            {
+                "folder": folder,
+                "uid_validity": uid_validity,
+                "uids": selected,
+                "messages": preview_messages,
+            },
+            int(time.time()) + APPROVAL_TTL,
+        )
+        return {
+            "preview_id": preview_id,
+            "expires_in_seconds": APPROVAL_TTL,
+            "folder": folder,
+            "count": len(selected),
+            "messages": preview_messages,
+            "approval_url": f"{approval_base_url}/{preview_id}?token={approval_token}",
+            "approval_instruction": "Open the approval URL, inspect the messages, and click Approve only if correct.",
+        }
     with pending_lock:
         for expired in [key for key, value in pending.items() if value[0] <= now]:
             del pending[expired]
@@ -341,11 +370,54 @@ def trash_messages(
         "expires_in_seconds": APPROVAL_TTL,
         "folder": folder,
         "count": len(selected),
-        "messages": [yahoo.summary(uid, messages[uid]) for uid in selected],
+        "messages": preview_messages,
     }
 
 
-def create_app(token="", *, remote_host=None):
+async def remote_approval(request):
+    """Render and execute a user-clicked approval for a Lambda preview."""
+    if remote_approval_store is None:
+        return PlainTextResponse("Remote approvals are not configured.", status_code=404)
+    approval_id = request.path_params["approval_id"]
+    token = request.query_params.get("token", "")
+    if request.method == "POST":
+        values = parse_qs((await request.body()).decode("utf-8", "replace"))
+        token = values.get("token", [token])[0]
+    item = remote_approval_store.get(approval_id, token)
+    if item is None:
+        return PlainTextResponse("Approval expired, invalid, or already used.", status_code=404)
+    if request.method == "GET":
+        rows = "".join(
+            f"<li><strong>{escape(str(message.get('subject', '')))}</strong> — "
+            f"{escape(str(message.get('from', '')))}</li>"
+            for message in item.get("messages", [])
+        )
+        action = escape(str(request.url), quote=True)
+        body = (
+            "<!doctype html><meta charset='utf-8'><title>Yahoo Mail approval</title>"
+            "<h1>Approve moving messages to Trash</h1>"
+            f"<p>This approval expires in five minutes. Messages: {len(item.get('messages', []))}</p>"
+            f"<ul>{rows}</ul>"
+            f"<form method='post' action='{action}'><input type='hidden' name='token' value='{escape(token, quote=True)}'>"
+            "<button type='submit'>Approve move to Trash</button></form>"
+        )
+        return HTMLResponse(body)
+    try:
+        with yahoo.connection() as conn:
+            result = yahoo.move_to_trash(conn, item["folder"], int(item["uid_validity"]), item["uids"])
+    except yahoo.MailError as exc:
+        return PlainTextResponse(str(exc), status_code=409)
+    if remote_approval_store.consume(approval_id, token) is None:
+        return PlainTextResponse("The approval was already used.", status_code=409)
+    return HTMLResponse(
+        f"<h1>Move accepted</h1><p>{escape(str(result.get('requested_uids', item['uids'])))}</p>"
+    )
+
+
+def create_app(token="", *, remote_host=None, approval_store=None, approval_url=""):
+    global remote_approval_store, approval_base_url
+    remote_approval_store = approval_store
+    approval_base_url = approval_url.rstrip("/")
     if token and (len(token) < 32 or not token.isascii() or not token.isalnum()):
         raise ValueError("MCP bearer token must contain at least 32 ASCII letters or digits.")
     if remote_host:
@@ -356,9 +428,12 @@ def create_app(token="", *, remote_host=None):
             raise ValueError("MCP transport security is not configured.")
         transport_security.allowed_hosts.append(remote_host)
         mcp.remove_tool("save_draft")
-        mcp.remove_tool("trash_messages")
+        if approval_store is None:
+            mcp.remove_tool("trash_messages")
 
     app = mcp.streamable_http_app()
+    if approval_store is not None:
+        app.add_route("/approve/{approval_id}", remote_approval, methods=["GET", "POST"])
     if token:
         async def authenticate(request, call_next):
             scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
