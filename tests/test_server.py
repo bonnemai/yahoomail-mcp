@@ -20,6 +20,37 @@ def test_require_writes_is_disabled_by_default(monkeypatch):
         server.require_writes()
 
 
+def test_account_setup_instructions_never_returns_credentials(monkeypatch):
+    monkeypatch.delenv("YAHOO_EMAIL", raising=False)
+    monkeypatch.delenv("YAHOO_APP_PASSWORD", raising=False)
+    result = server.account_setup_instructions()
+    assert result["missing"] == ["YAHOO_EMAIL", "YAHOO_APP_PASSWORD"]
+    assert "password" in result["steps"][-1].lower()
+    assert "value" not in result
+
+
+def test_analyze_senders_groups_by_list_id(monkeypatch):
+    class Context:
+        def __enter__(self): return object()
+        def __exit__(self, *args): return False
+
+    monkeypatch.setattr(server.yahoo, "connection", lambda: Context())
+    monkeypatch.setattr(server.yahoo, "select", lambda *args: 7)
+    monkeypatch.setattr(server.yahoo, "search_uids", lambda *args: [3, 2])
+    monkeypatch.setattr(server.yahoo, "headers", lambda *args: {
+        3: {"List-ID": "news.example", "From": "news@example.com"},
+        2: {"List-ID": "news.example", "From": "news@example.com"},
+    })
+    monkeypatch.setattr(server.yahoo, "metadata", lambda *args: {
+        3: {"size": 20, "unread": True}, 2: {"size": 30, "unread": True},
+    })
+    result = server.analyze_senders(min_messages=2, min_unread=0, min_total_bytes=0)
+    assert result["uid_validity"] == 7
+    assert result["groups"][0]["list_id"] == "news.example"
+    assert result["groups"][0]["message_count"] == 2
+    assert result["groups"][0]["total_bytes"] == 50
+
+
 def test_trash_preview_and_single_use_approval(monkeypatch):
     class Context:
         def __enter__(self):

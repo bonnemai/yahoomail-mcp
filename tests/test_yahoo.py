@@ -120,6 +120,25 @@ def test_fetch_literals_and_headers_parse_uid_attributes(monkeypatch):
     assert yahoo.headers(conn, [8])[8]["Subject"] == "Parsed"
 
 
+def test_metadata_extracts_size_and_unread_state():
+    conn = FakeConnection()
+    conn.uid = lambda *args: ("OK", [
+        b"* 1 FETCH (UID 8 RFC822.SIZE 123 FLAGS (\\Seen))",
+        b"* 2 FETCH (UID 9 RFC822.SIZE 456 FLAGS ())",
+    ])
+    assert yahoo.metadata(conn, [8, 9]) == {
+        8: {"size": 123, "unread": False},
+        9: {"size": 456, "unread": True},
+    }
+
+
+def test_unsubscribe_options_ignores_non_standard_values():
+    message = {"List-Unsubscribe": "<https://example.com/out>, <mailto:leave@example.com>, <javascript:bad>"}
+    assert yahoo.unsubscribe_options(message) == [
+        "https://example.com/out", "mailto:leave@example.com",
+    ]
+
+
 def test_html_text_ignores_hidden_content():
     parser = yahoo.HTMLText()
     parser.feed("<p>Visible</p><script>secret</script><div>Next<br>line</div>")
