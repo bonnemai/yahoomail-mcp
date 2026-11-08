@@ -379,20 +379,23 @@ async def remote_approval(request):
     if remote_approval_store is None:
         return PlainTextResponse("Remote approvals are not configured.", status_code=404)
     approval_id = request.path_params["approval_id"]
-    token = request.query_params.get("token", "")
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
     if request.method == "POST":
         values = parse_qs((await request.body()).decode("utf-8", "replace"))
-        token = values.get("token", [token])[0]
-    item = remote_approval_store.get(approval_id, token)
+        token = values.get("token", [""])[0]
+        item = remote_approval_store.consume(approval_id, token) if token else None
+    else:
+        token = request.query_params.get("token", "")
+        item = remote_approval_store.get(approval_id, token) if token else None
     if item is None:
-        return PlainTextResponse("Approval expired, invalid, or already used.", status_code=404)
-    if request.method == "GET":
+        return PlainTextResponse("Approval expired, invalid, or already used.", status_code=404, headers=headers)
+    if request.method in {"GET", "HEAD"}:
         rows = "".join(
             f"<li><strong>{escape(str(message.get('subject', '')))}</strong> — "
             f"{escape(str(message.get('from', '')))}</li>"
             for message in item.get("messages", [])
         )
-        action = escape(str(request.url), quote=True)
+        action = escape(request.url.path, quote=True)
         body = (
             "<!doctype html><meta charset='utf-8'><title>Yahoo Mail approval</title>"
             "<h1>Approve moving messages to Trash</h1>"
@@ -401,16 +404,16 @@ async def remote_approval(request):
             f"<form method='post' action='{action}'><input type='hidden' name='token' value='{escape(token, quote=True)}'>"
             "<button type='submit'>Approve move to Trash</button></form>"
         )
-        return HTMLResponse(body)
+        return HTMLResponse(body, headers=headers)
     try:
         with yahoo.connection() as conn:
             result = yahoo.move_to_trash(conn, item["folder"], int(item["uid_validity"]), item["uids"])
     except yahoo.MailError as exc:
-        return PlainTextResponse(str(exc), status_code=409)
-    if remote_approval_store.consume(approval_id, token) is None:
-        return PlainTextResponse("The approval was already used.", status_code=409)
+        return PlainTextResponse(
+            f"{exc} Check Yahoo Mail before creating a new approval.", status_code=409, headers=headers
+        )
     return HTMLResponse(
-        f"<h1>Move accepted</h1><p>{escape(str(result.get('requested_uids', item['uids'])))}</p>"
+        f"<h1>Move accepted</h1><p>{escape(str(result.get('requested_uids', item['uids'])))}</p>", headers=headers
     )
 
 
@@ -430,12 +433,16 @@ def create_app(token="", *, remote_host=None, approval_store=None, approval_url=
         mcp.remove_tool("save_draft")
         if approval_store is None:
             mcp.remove_tool("trash_messages")
+            mcp.remove_tool("preview_cleanup")
 
     app = mcp.streamable_http_app()
     if approval_store is not None:
         app.add_route("/approve/{approval_id}", remote_approval, methods=["GET", "POST"])
     if token:
         async def authenticate(request, call_next):
+            path = request.scope["path"]
+            if approval_store is not None and path.startswith("/approve/") and path.count("/") == 2:
+                return await call_next(request)
             scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
             if scheme.lower() != "bearer" or not secrets.compare_digest(supplied.encode(), token.encode()):
                 return JSONResponse(

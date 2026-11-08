@@ -7,6 +7,15 @@ Parameters:
     Type: String
     Description: ARN of the Secrets Manager JSON secret for this account
 
+  EnableRemoteWrites:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['false', 'true']
+    Description: Enable the browser-approved Trash workflow
+
+Conditions:
+  RemoteWritesEnabled: !Equals [!Ref EnableRemoteWrites, 'true']
+
 Resources:
   McpApi:
     Type: AWS::ApiGatewayV2::Api
@@ -40,20 +49,25 @@ Resources:
           MCP_REMOTE_HOST: !Sub '${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
           MCP_APPROVAL_BASE_URL: !Sub 'https://${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/approve'
           YAHOO_MCP_SECRET_ARN: !Ref YahooMcpSecretArn
-          YAHOO_MCP_APPROVAL_TABLE: !Ref ApprovalTable
+          YAHOO_MCP_ENABLE_REMOTE_WRITES: !Ref EnableRemoteWrites
+          YAHOO_MCP_APPROVAL_TABLE: !If [RemoteWritesEnabled, !Ref ApprovalTable, !Ref AWS::NoValue]
       Policies:
         - Statement:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: !Ref YahooMcpSecretArn
-            - Effect: Allow
-              Action:
-                - dynamodb:DeleteItem
-                - dynamodb:GetItem
-                - dynamodb:PutItem
-              Resource: !GetAtt ApprovalTable.Arn
+            - !If
+              - RemoteWritesEnabled
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt ApprovalTable.Arn
+              - !Ref AWS::NoValue
 
   ApprovalTable:
+    Condition: RemoteWritesEnabled
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
@@ -99,6 +113,7 @@ Resources:
       RetentionInDays: 7
 
   ApprovalRoute:
+    Condition: RemoteWritesEnabled
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref McpApi

@@ -15,7 +15,7 @@ Client MCP --Bearer token--> API Gateway HTTP API
                                       previews TTL
 ```
 
-La Lambda utilise un token bearer séparé du token local. Les identifiants Yahoo et ce token sont lus depuis Secrets Manager. Les écritures sont limitées au déplacement vers Trash après approbation explicite ; les brouillons et l’envoi ne sont pas exposés par le profil distant.
+La Lambda utilise un token bearer séparé du token local. Les identifiants Yahoo et ce token sont lus depuis Secrets Manager. Le déploiement est en lecture seule par défaut. Avec `EnableRemoteWrites=true`, les écritures sont limitées au déplacement vers Trash après approbation explicite ; les brouillons et l’envoi ne sont pas exposés par le profil distant.
 
 L’URL d’approbation `/approve/...` affiche la preview et demande un clic utilisateur. Les approvals ne nécessitent pas de consulter CloudWatch Logs. Chaque preview est à usage unique et expire après cinq minutes. Le lien d’approbation est lui-même secret : ne pas le publier dans un ticket, un log ou une conversation partagée.
 
@@ -82,10 +82,10 @@ sam deploy --stack-name yahoo-mail-mcp \
 
 Le stack crée :
 
-- une API Gateway HTTP avec `/mcp` et `/approve/{approval_id}` ;
+- une API Gateway HTTP avec `/mcp` et, si les écritures sont activées, `/approve/{approval_id}` ;
 - une Lambda ARM64 basée sur [Dockerfile.lambda](./Dockerfile.lambda) ;
-- une table DynamoDB à la demande avec expiration des previews ;
-- un rôle autorisé à lire le secret et la table d’approbation ;
+- une table DynamoDB à la demande avec expiration des previews, uniquement si les écritures sont activées ;
+- un rôle autorisé à lire le secret et, si les écritures sont activées, à utiliser la table d’approbation ;
 - un groupe de logs conservé sept jours.
 
 Accepter le change set uniquement après avoir vérifié le compte, la région et l’ARN du secret.
@@ -122,6 +122,8 @@ Le test doit découvrir les outils de lecture et d’analyse, puis afficher `Yah
 
 ## 4. Utiliser le nettoyage distant
 
+Après avoir validé le mode lecture seule, redéployer avec les mêmes paramètres en ajoutant `EnableRemoteWrites=true` à `--parameter-overrides`. La route navigateur utilise le jeton du lien, tandis que `/mcp` exige toujours le jeton Bearer.
+
 Dans le client MCP authentifié :
 
 1. Appeler `analyze_senders` pour repérer les listes très fréquentes ou volumineuses.
@@ -130,7 +132,7 @@ Dans le client MCP authentifié :
 4. Sélectionner explicitement les UID à déplacer et appeler `preview_cleanup`.
 5. Ouvrir l’`approval_url` retournée dans un navigateur, vérifier les sujets et expéditeurs, puis cliquer sur **Approve move to Trash**.
 
-Le déplacement est alors effectué par Lambda via IMAP `MOVE`. Il n’y a pas de suppression permanente. Si Yahoo n’annonce pas `MOVE`, l’interface indiquera d’effectuer l’opération dans Yahoo Mail.
+L’approbation est consommée avant de contacter Yahoo. En cas d’erreur ou de réponse incertaine, vérifie dans Yahoo Mail avant de créer un nouvel aperçu. Le déplacement est alors effectué par Lambda via IMAP `MOVE`. Il n’y a pas de suppression permanente. Si Yahoo n’annonce pas `MOVE`, l’interface indiquera d’effectuer l’opération dans Yahoo Mail.
 
 Ne pas demander à l’IA de suivre automatiquement l’URL d’approbation. Le clic doit être une action humaine après vérification de la preview.
 
