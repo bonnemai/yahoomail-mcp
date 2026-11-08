@@ -14,7 +14,10 @@ from html.parser import HTMLParser
 HOST = "imap.mail.yahoo.com"
 MAX_MESSAGE_BYTES = 1_000_000
 BODY_LIMIT = 12_000
-HEADER_FIELDS = "DATE FROM TO SUBJECT MESSAGE-ID REFERENCES IN-REPLY-TO"
+HEADER_FIELDS = (
+    "DATE FROM TO SUBJECT MESSAGE-ID REFERENCES IN-REPLY-TO "
+    "LIST-ID LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST"
+)
 
 
 class MailError(Exception):
@@ -131,9 +134,42 @@ def headers(conn, uids):
     return {uid: BytesParser(policy=policy.default).parsebytes(raw) for uid, raw in literals.items()}
 
 
+def metadata(conn, uids):
+    """Return message size and read state without fetching message bodies."""
+    if not uids:
+        return {}
+    data = checked(conn.uid("FETCH", ",".join(map(str, uids)), "(UID RFC822.SIZE FLAGS)"))
+    result = {}
+    for row in data:
+        if not isinstance(row, bytes):
+            continue
+        uid_match = re.search(rb"\bUID (\d+)\b", row)
+        size_match = re.search(rb"\bRFC822\.SIZE (\d+)\b", row)
+        flags_match = re.search(rb"\bFLAGS \(([^)]*)\)", row)
+        if uid_match:
+            flags = flags_match[1].split() if flags_match else []
+            result[int(uid_match[1])] = {
+                "size": int(size_match[1]) if size_match else 0,
+                "unread": b"\\Seen" not in flags,
+            }
+    return result
+
+
+def unsubscribe_options(message):
+    """Extract only standard unsubscribe values from message headers."""
+    raw = str(message.get("List-Unsubscribe", ""))
+    values = re.findall(r"<([^<>]+)>", raw)
+    return [value for value in values if value.startswith(("https://", "mailto:"))]
+
+
 def summary(uid, message):
-    return {"uid": uid, **{key.lower(): str(message.get(key, ""))[:500]
-                          for key in ("From", "To", "Subject", "Date")}}
+    return {
+        "uid": uid,
+        **{key.lower(): str(message.get(key, ""))[:500]
+           for key in ("From", "To", "Subject", "Date")},
+        "list_id": str(message.get("List-ID", ""))[:300],
+        "unsubscribe": unsubscribe_options(message),
+    }
 
 
 class HTMLText(HTMLParser):

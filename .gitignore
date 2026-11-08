@@ -9,3 +9,7 @@ htmlcov/
 dist/
 build/
 .venv
+.aws-sam/
+samconfig.toml
+.env.*
+!.env.example

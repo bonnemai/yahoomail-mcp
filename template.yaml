@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Single-account Yahoo Mail MCP with bearer authentication and read-only tools
+
+Parameters:
+  YahooMcpSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager JSON secret for this account
+
+Resources:
+  McpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-mcp'
+      ProtocolType: HTTP
+
+  McpStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref McpApi
+      StageName: '$default'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+
+  McpFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+      DockerTag: lambda-readonly
+    Properties:
+      PackageType: Image
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 28
+      Environment:
+        Variables:
+          MCP_REMOTE_HOST: !Sub '${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+          YAHOO_MCP_SECRET_ARN: !Ref YahooMcpSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref YahooMcpSecretArn
+
+  McpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref McpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt McpFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 29000
+
+  McpRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref McpApi
+      RouteKey: 'ANY /mcp'
+      Target: !Sub 'integrations/${McpIntegration}'
+
+  AllowApiInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref McpFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${McpApi}/$default/*/mcp'
+
+  McpLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${McpFunction}'
+      RetentionInDays: 7
+
+Outputs:
+  McpUrl:
+    Description: Authenticated MCP endpoint
+    Value: !Sub 'https://${McpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/mcp'

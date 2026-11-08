@@ -4,6 +4,8 @@ Private MCP server for a Yahoo Mail account. It runs on a Mac with Docker Compos
 
 ![alt text](image.png)
 
+For remote access, [test bearer authentication locally first, then deploy the read-only AWS Lambda profile](./LAMBDA.md).
+
 ## Available tools
 
 | Tool | Action |
@@ -11,6 +13,11 @@ Private MCP server for a Yahoo Mail account. It runs on a Mac with Docker Compos
 | `search_mail` | Search a folder by sender, recipient, subject, or text. Returns up to 20 results per page with useful headers. |
 | `read_message` | Read a message without marking it as read. |
 | `read_thread` | Read up to five related messages in the requested folder. |
+| `account_setup_instructions` | Explain how to configure Yahoo without collecting credentials in chat. |
+| `analyze_senders` | Group messages by `List-ID` or sender and report volume, unread count, size and unsubscribe headers. |
+| `suggest_cleanup` | Suggest large unread messages for review; never changes the mailbox. |
+| `unsubscribe_options` | Show standard `List-Unsubscribe` options for a sender or mailing list. |
+| `preview_cleanup` | Create a reviewed Trash preview for selected message IDs. |
 | `save_draft` | Save a new draft or reply in Yahoo Mail. |
 | `trash_messages` | Preview up to 20 messages, then move them to the trash using a one-time approval code. |
 
@@ -45,6 +52,8 @@ YAHOO_ENABLE_WRITES=0
 ```
 
 Use your full Yahoo address and the generated app password, never your normal account password. Keep `.env` on your Mac. It is excluded from Git and the Docker build context.
+
+An AI client may explain these setup steps or call `account_setup_instructions`, but it must not collect the app password in a chat message or pass it as an MCP argument. Enter it directly in the protected `.env` file, AWS Secrets Manager, or another local secret store, then restart the server.
 
 ## 2. Start the server
 
@@ -121,7 +130,13 @@ In ChatGPT, the local URL can be reached through the [OpenAI Secure MCP Tunnel](
 
 Check [supported plans and write permissions](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt) before configuring the tunnel. OpenAI documents MCP write support for Business, Enterprise, and Edu workspaces. On Plus, start with local testing and a compatible MCP client.
 
-The Mac port is bound to `127.0.0.1`. This is a single-user server that trusts clients able to reach that port; do not expose it directly to the Internet. Tool responses are sent to the selected MCP client. The Yahoo password is used only for the server's IMAP connection.
+The Mac port is bound to `127.0.0.1`. Without an optional bearer token, the server trusts clients that can reach that port. Keep the local port bound to loopback. Tool responses are sent to the selected MCP client. The Yahoo password is used only for the server's IMAP connection.
+
+### Authentication
+
+For local clients, set `YAHOO_MCP_TOKEN` to a random value of at least 32 ASCII letters or digits. Generate one with `openssl rand -hex 32`. Clients must send it as `Authorization: Bearer ...`. A bearer token is a shared secret, not a complete OAuth authorization flow; do not expose this local endpoint or token to the public Internet.
+
+The Lambda profile in [LAMBDA.md](./LAMBDA.md) is also bearer-token based and read-only. A production OAuth deployment should put Cognito or another OAuth 2.0 authorization server in front of API Gateway and validate JWTs before invoking Lambda. The Yahoo app password remains a separate server-side secret.
 
 ## 5. Test drafts and trash
 
@@ -143,6 +158,12 @@ Start with an easy-to-identify test message.
 3. Confirm the message is in Yahoo's Trash folder, then restore it in Yahoo to validate the workflow.
 
 An approval code expires after five minutes and can be used only once. If the container restarts, create a new preview. The server moves only the IDs from that preview using IMAP `MOVE`. If Yahoo does not advertise `MOVE`, perform the move in Yahoo Mail instead.
+
+### Mailing lists and cleanup
+
+Call `analyze_senders` first. It groups the scanned messages by `List-ID` when available, otherwise by sender, and reports message count, unread count, total size and standard unsubscribe headers. Use `unsubscribe_options` to inspect a particular list. Only links from the `List-Unsubscribe` header are shown; links inside message bodies are never followed automatically.
+
+Call `suggest_cleanup` to obtain large unread-message candidates. Review the returned UIDs and reasons, then call `preview_cleanup` with the exact selected UIDs. The final `trash_messages` approval still requires the user to inspect the preview and provide the one-time code. The server moves messages to Trash; it does not permanently delete them.
 
 ## Large mailboxes and troubleshooting
 

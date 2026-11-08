@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!Dockerfile.lambda
+!requirements.txt
+!pyproject.toml
+!src/
+!src/yahoomail_mcp/
+!src/yahoomail_mcp/*.py

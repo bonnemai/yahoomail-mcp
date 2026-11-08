@@ -1,0 +1,12 @@
+FROM python:3.13-slim
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 AWS_LWA_PORT=8000 \
+    AWS_LWA_READINESS_CHECK_PROTOCOL=tcp
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt boto3==1.43.126
+COPY pyproject.toml .
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
+USER 10001:10001
+CMD ["python", "-m", "yahoomail_mcp.lambda_server"]
