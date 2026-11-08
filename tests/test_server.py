@@ -92,3 +92,67 @@ def test_save_draft_success_and_invalid_recipient_are_tool_errors(monkeypatch):
     monkeypatch.setattr(server.yahoo, "append_draft", lambda *args: (_ for _ in ()).throw(ValueError()))
     with pytest.raises(ToolError, match="Invalid draft headers"):
         server.save_draft("to@example.com", "subject", "body")
+
+
+def test_remote_approval_uses_link_token_and_consumes_before_imap(monkeypatch):
+    from contextlib import contextmanager
+
+    from starlette.testclient import TestClient
+
+    token = "browser-token"
+    approval = {"folder": "INBOX", "uid_validity": 1, "uids": [7], "messages": []}
+    events = []
+
+    class Store:
+        def get(self, approval_id, supplied):
+            if approval_id == "preview" and supplied == token and "consume" not in events:
+                return approval
+            return None
+
+        def consume(self, approval_id, supplied):
+            item = self.get(approval_id, supplied)
+            if item:
+                events.append("consume")
+            return item
+
+    @contextmanager
+    def connect():
+        events.append("connect")
+        yield object()
+
+    monkeypatch.setattr(server, "remote_approval_store", None)
+    monkeypatch.setattr(server, "approval_base_url", "")
+    monkeypatch.setattr(server.mcp, "_session_manager", None)
+    monkeypatch.setattr(yahoo, "connection", connect)
+    monkeypatch.setattr(yahoo, "move_to_trash", lambda *args: {"requested_uids": [7]})
+    app = server.create_app("a" * 32, approval_store=Store())
+    with TestClient(app) as client:
+        assert client.post("/mcp").status_code == 401
+        assert client.get("/approve/preview?token=wrong").status_code == 404
+        response = client.get(f"/approve/preview?token={token}")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert "Approve move to Trash" in response.text
+        assert client.post(f"/approve/preview?token={token}").status_code == 404
+        assert events == []
+        assert client.post("/approve/preview", data={"token": token}).status_code == 200
+        assert client.post("/approve/preview", data={"token": token}).status_code == 404
+        assert events == ["consume", "connect"]
+
+
+def test_lambda_defaults_to_read_only(monkeypatch):
+    from yahoomail_mcp import lambda_server
+
+    monkeypatch.setenv("MCP_REMOTE_HOST", "example.com")
+    monkeypatch.setenv("YAHOO_ENABLE_WRITES", "1")
+    monkeypatch.setenv("YAHOO_EMAIL", "old@example.com")
+    monkeypatch.setenv("YAHOO_APP_PASSWORD", "old")
+    monkeypatch.setattr(lambda_server, "create_app", lambda token, **kwargs: kwargs)
+    app = lambda_server.configure({
+        "YAHOO_MCP_TOKEN": "a" * 32,
+        "YAHOO_EMAIL": "test@example.com",
+        "YAHOO_APP_PASSWORD": "fake",
+    })
+    assert app["approval_store"] is None
+    with pytest.raises(yahoo.MailError, match="Writes are disabled"):
+        server.require_writes()
