@@ -4,7 +4,9 @@ Private MCP server for a Yahoo Mail account. It runs on a Mac with Docker Compos
 
 ![alt text](image.png)
 
-For remote access, [test bearer authentication locally first, then deploy the AWS Lambda profile](./LAMBDA.md).
+The default mode is single-user local mode: one Yahoo mailbox is configured in `.env`. For remote multi-user access, see the [AWS Lambda deployment guide](./LAMBDA.md).
+
+The project deliberately keeps these modes separate. Local mode uses a Yahoo app password and never prompts for it through MCP. Lambda multi-user mode uses Yahoo OAuth per user and does not use `YAHOO_EMAIL` or `YAHOO_APP_PASSWORD`.
 
 ## Available tools
 
@@ -19,7 +21,7 @@ For remote access, [test bearer authentication locally first, then deploy the AW
 | `unsubscribe_options` | Show standard `List-Unsubscribe` options for a sender or mailing list. |
 | `preview_cleanup` | Create a reviewed Trash preview for selected message IDs. |
 | `save_draft` | Save a new draft or reply in Yahoo Mail. |
-| `trash_messages` | Preview up to 20 messages, then move them to the trash using a one-time approval code. |
+| `trash_messages` | Preview up to 20 messages, then move them to Trash using a local approval code or an AWS approval URL. |
 
 There is no SMTP sending or permanent deletion. Write operations are disabled by default.
 
@@ -136,7 +138,9 @@ The Mac port is bound to `127.0.0.1`. Without an optional bearer token, the serv
 
 For local clients, set `YAHOO_MCP_TOKEN` to a random value of at least 32 ASCII letters or digits. Generate one with `openssl rand -hex 32`. Clients must send it as `Authorization: Bearer ...`. A bearer token is a shared secret, not a complete OAuth authorization flow; do not expose this local endpoint or token to the public Internet.
 
-The Lambda profile in [LAMBDA.md](./LAMBDA.md) is bearer-token based. It permits only reviewed moves to Trash; drafts and sending are not exposed. A production OAuth deployment should put Cognito or another OAuth 2.0 authorization server in front of API Gateway and validate JWTs before invoking Lambda. The Yahoo app password remains a separate server-side secret.
+The Lambda multi-user profile in [LAMBDA.md](./LAMBDA.md) uses Yahoo OAuth to connect each user to their own mailbox. After OAuth login, Lambda issues a per-user MCP session token. The token identifies the user; it never contains the Yahoo password or OAuth refresh token. Reviewed moves to Trash are available only when explicitly enabled; drafts and sending are not exposed remotely.
+
+The local bearer token, when enabled, protects the single mailbox configured in `.env`. It is not a multi-user identity system and must not contain Yahoo credentials.
 
 ## 5. Test drafts and trash
 

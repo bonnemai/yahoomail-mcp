@@ -48,4 +48,8 @@ The MCP does not send email or permanently delete messages. A draft may be creat
 
 ## Deployment context
 
-For local mode, use the local MCP endpoint and local approval code workflow. For AWS, use the endpoint and bearer token configured in `LAMBDA.md`; Lambda stores pending approvals in DynamoDB and exposes the user-click approval page. A bearer token is a shared secret and is not equivalent to OAuth. Do not describe the current deployment as OAuth unless an OAuth provider or JWT authorizer has been configured in front of it.
+The default local mode is single-user: the mailbox comes from `YAHOO_EMAIL` and `YAHOO_APP_PASSWORD` in the protected environment, and the optional local bearer token protects that one mailbox. If `YAHOO_MCP_TOKEN` is configured, verify that the MCP client sends it as `Authorization: Bearer ...`.
+
+The AWS multi-user mode is different: start Yahoo OAuth at `/oauth/start`, let the user authorize their mailbox, and use the one-time displayed MCP session token for that user as `Authorization: Bearer ...`. The token identifies the user; it does not contain Yahoo credentials. Lambda stores each user's OAuth tokens separately in DynamoDB and refreshes them as needed. Yahoo Mail access may require Yahoo Developer approval before the `mail-r` scope works.
+
+For AWS cleanup, Lambda stores pending approvals in DynamoDB and exposes the user-click approval page. Do not open or submit the approval URL on the user's behalf. Never describe the local shared bearer token as OAuth.

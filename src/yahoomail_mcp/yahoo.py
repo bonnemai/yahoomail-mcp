@@ -5,6 +5,7 @@ import os
 import re
 import ssl
 from contextlib import contextmanager
+from contextvars import ContextVar
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -24,6 +25,18 @@ class MailError(Exception):
     pass
 
 
+current_mailbox = ContextVar("current_mailbox", default=None)
+
+
+@contextmanager
+def use_mailbox(email, access_token):
+    marker = current_mailbox.set((email, access_token))
+    try:
+        yield
+    finally:
+        current_mailbox.reset(marker)
+
+
 def connection_error(stage, exc):
     """Return a useful, non-sensitive explanation for an IMAP failure."""
     if isinstance(exc, (TimeoutError, ssl.SSLError)):
@@ -39,15 +52,21 @@ def connection_error(stage, exc):
 
 @contextmanager
 def connection():
-    email = os.environ.get("YAHOO_EMAIL")
-    password = os.environ.get("YAHOO_APP_PASSWORD")
-    if not email or not password:
+    mailbox = current_mailbox.get()
+    email = mailbox[0] if mailbox else os.environ.get("YAHOO_EMAIL")
+    password = None if mailbox else os.environ.get("YAHOO_APP_PASSWORD")
+    if not email or (not mailbox and not password):
         raise MailError("Set YAHOO_EMAIL and YAHOO_APP_PASSWORD before calling Yahoo.")
     stage = "connection"
     try:
         with imaplib.IMAP4_SSL(HOST, 993, ssl_context=ssl.create_default_context(), timeout=20) as conn:
             stage = "login"
-            conn.login(email, password)
+            if mailbox:
+                access_token = mailbox[1]
+                auth_string = f"user={email}\1auth=Bearer {access_token}\1\1".encode()
+                conn.authenticate("XOAUTH2", lambda _: auth_string)
+            else:
+                conn.login(email, password)
             stage = "mailbox operation"
             yield conn
     except (imaplib.IMAP4.error, OSError) as exc:

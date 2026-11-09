@@ -9,7 +9,9 @@ from mcp.client.streamable_http import streamable_http_client
 
 
 async def main(url, search, read_only):
-    token = os.environ.get("YAHOO_MCP_TOKEN")
+    # Local mode uses YAHOO_MCP_TOKEN; Lambda multi-user mode uses the
+    # per-user session token displayed after Yahoo OAuth completes.
+    token = os.environ.get("YAHOO_MCP_SESSION_TOKEN") or os.environ.get("YAHOO_MCP_TOKEN")
     if token and httpx.URL(url).scheme != "https" and httpx.URL(url).host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("Use HTTPS when sending a bearer token to a remote server.")
     headers = {"Authorization": f"Bearer {token}"} if token else None
