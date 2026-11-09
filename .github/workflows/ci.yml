@@ -45,15 +45,23 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Pre-pull Lambda base images
-        run: |
-          docker pull --platform linux/arm64 python:3.13-slim
-          docker pull --platform linux/arm64 public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build Lambda package
-        env:
-          DOCKER_DEFAULT_PLATFORM: linux/arm64
-        run: sam build --use-container
+      - name: Build Lambda image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.lambda
+          platforms: linux/arm64
+          tags: yahoomail-mcp:ci
+          load: true
+
+      - name: Package Lambda image
+        run: |
+          mkdir -p .artifacts
+          docker save yahoomail-mcp:ci | gzip > .artifacts/yahoomail-mcp-arm64.tar.gz
+          cp template.yaml .artifacts/template.yaml
 
       - name: Upload coverage report
         if: always()
@@ -63,10 +71,10 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
 
-      - name: Upload SAM build artifact
+      - name: Upload Lambda package
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: sam-build
-          path: .aws-sam/build
+          name: lambda-package
+          path: .artifacts
           if-no-files-found: error
