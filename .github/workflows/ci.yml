@@ -45,6 +45,11 @@ jobs:
         with:
           platforms: arm64
 
+      - name: Pre-pull Lambda base images
+        run: |
+          docker pull --platform linux/arm64 python:3.13-slim
+          docker pull --platform linux/arm64 public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
+
       - name: Build Lambda package
         env:
           DOCKER_DEFAULT_PLATFORM: linux/arm64
