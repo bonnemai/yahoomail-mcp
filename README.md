@@ -115,6 +115,10 @@ python3 -m venv .venv
 
 The first smoke test opens an MCP session and verifies the available tools. It works without Yahoo access. The second performs a real read-only search in `INBOX`; it does not print message contents or modify mail.
 
+## Automated checks
+
+The [GitHub Actions workflow](./.github/workflows/ci.yml) runs on pushes, pull requests, and manual dispatches. It runs the test suite with the 80% coverage gate, validates the SAM template, and builds the ARM64 Lambda package with Docker. It does not deploy to AWS or require Yahoo credentials.
+
 ## 4. Connect an MCP client
 
 On the Mac, use `http://127.0.0.1:8000/mcp` in a client that supports **Streamable HTTP**. For example, with Claude Code:
